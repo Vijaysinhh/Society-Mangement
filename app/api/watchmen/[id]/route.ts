@@ -34,6 +34,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     let shiftStart = clean(body.shiftStart)
     let shiftEnd = clean(body.shiftEnd)
     if (shiftStart && shiftEnd) {
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(shiftStart) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(shiftEnd)) return response.error('Enter valid shift times', 400)
       const { data: activeShift } = await supabaseAdmin.from('watchman_shifts').select('id').eq('watchman_id', id).eq('society_id', session.societyId).eq('status', 'active').maybeSingle()
       const shiftResult = activeShift
         ? await supabaseAdmin.from('watchman_shifts').update({ shift_start: shiftStart, shift_end: shiftEnd }).eq('id', activeShift.id)
@@ -45,7 +46,13 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       shiftEnd = activeShift?.shift_end?.slice(0, 5) || ''
     }
 
-    if (updates.status && updates.status !== 'active') await supabaseAdmin.from('auth_sessions').update({ revoked_at: new Date().toISOString() }).eq('account_type', 'watchman').eq('account_id', id).is('revoked_at', null)
+    if ((updates.status && updates.status !== 'active') || body.password) {
+      await supabaseAdmin.from('auth_sessions').update({ revoked_at: new Date().toISOString() }).eq('account_type', 'watchman').eq('account_id', id).is('revoked_at', null)
+    }
+    if (updates.status && updates.status !== 'active') {
+      await supabaseAdmin.from('watchman_duty_logs').update({ check_out_at: new Date().toISOString(), status: 'completed' })
+        .eq('society_id', session.societyId).eq('watchman_id', id).eq('status', 'on_duty')
+    }
     await supabaseAdmin.from('audit_events').insert({ society_id: session.societyId, actor_type: 'society_admin', actor_id: session.accountId, action: 'watchman.updated', entity_type: 'watchman', entity_id: id, metadata: { changed_fields: Object.keys(updates).filter((field) => field !== 'password_hash'), password_reset: Boolean(body.password) } })
     return response.success({ id: watchman.id, username: watchman.username, name: watchman.name, phone: watchman.phone, address: watchman.address, assignedArea: watchman.assigned_area, status: watchman.status, shiftStart, shiftEnd, createdAt: watchman.created_at })
   } catch (error) {

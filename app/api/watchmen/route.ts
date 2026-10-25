@@ -23,6 +23,20 @@ export async function GET(request: NextRequest) {
       .order('created_at', { ascending: false })
     if (error) return response.error(error.message, 400)
 
+    const watchmanIds = (data || []).map((watchman) => watchman.id)
+    const visitorCounts = new Map<string, number>()
+    const activeDutyByWatchman = new Map<string, string>()
+    if (watchmanIds.length) {
+      const [{ data: visitors, error: visitorError }, { data: activeDuty, error: dutyError }] = await Promise.all([
+        supabaseAdmin.from('visitor_requests').select('watchman_id').eq('society_id', session.societyId).in('watchman_id', watchmanIds),
+        supabaseAdmin.from('watchman_duty_logs').select('watchman_id, check_in_at').eq('society_id', session.societyId).eq('status', 'on_duty').in('watchman_id', watchmanIds),
+      ])
+      if (visitorError) return response.error(visitorError.message, 400)
+      if (dutyError) return response.error(dutyError.message, 400)
+      for (const visitor of visitors || []) visitorCounts.set(visitor.watchman_id, (visitorCounts.get(visitor.watchman_id) || 0) + 1)
+      for (const duty of activeDuty || []) activeDutyByWatchman.set(duty.watchman_id, duty.check_in_at)
+    }
+
     return response.success((data || []).map((watchman) => {
       const shifts = Array.isArray(watchman.watchman_shifts) ? watchman.watchman_shifts : []
       const activeShift = shifts.find((shift) => shift.status === 'active')
@@ -31,6 +45,9 @@ export async function GET(request: NextRequest) {
         address: watchman.address, assignedArea: watchman.assigned_area, status: watchman.status,
         shiftStart: activeShift?.shift_start?.slice(0, 5) || '',
         shiftEnd: activeShift?.shift_end?.slice(0, 5) || '', createdAt: watchman.created_at,
+        visitorsLogged: visitorCounts.get(watchman.id) || 0,
+        isOnDuty: activeDutyByWatchman.has(watchman.id),
+        currentDutyStartedAt: activeDutyByWatchman.get(watchman.id) || null,
       }
     }))
   } catch (error) {

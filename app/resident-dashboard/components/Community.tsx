@@ -37,6 +37,9 @@ interface BoardPost {
   likes: number
   replies: number
   liked: boolean
+  type: 'announcement' | 'post'
+  category?: 'safety' | 'maintenance' | 'event' | 'general'
+  canEdit?: boolean
 }
 
 // Mock data - in real app, this would come from admin dashboard
@@ -155,10 +158,10 @@ const mockAnnouncements = [
 
 export default function Community() {
   const [activeTab, setActiveTab] = useState<'board' | 'amenities' | 'mybookings'>('board')
-  const [announcements, setAnnouncements] = useState(mockAnnouncements)
+  const [announcements, setAnnouncements] = useState<typeof mockAnnouncements>([])
   const [showBookingModal, setShowBookingModal] = useState(false)
   const [selectedAmenity, setSelectedAmenity] = useState<Amenity | null>(null)
-  const [boardPosts, setBoardPosts] = useState(mockBoardPosts)
+  const [boardPosts, setBoardPosts] = useState<BoardPost[]>([])
   const [myBookings, setMyBookings] = useState(mockMyBookings)
   const [showNewPost, setShowNewPost] = useState(false)
   const [newPostText, setNewPostText] = useState('')
@@ -169,44 +172,50 @@ export default function Community() {
   const [currentUserUnit, setCurrentUserUnit] = useState('201') // Mock current user unit
   const [editingPostId, setEditingPostId] = useState<string | null>(null)
 
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/community/posts')
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not load community posts')
+        return result.data || []
+      })
+      .then((posts) => {
+        if (!cancelled) setBoardPosts(posts.map((post: any) => ({ ...post, timestamp: new Date(post.timestamp).toLocaleDateString() })))
+      })
+      .catch((error) => {
+        if (!cancelled) toast.error('Could not load community posts', { description: error instanceof Error ? error.message : 'Try again.' })
+      })
+    return () => { cancelled = true }
+  }, [])
+
   // Combine announcements and board posts into unified feed
-  const getUnifiedFeed = () => {
-    const announcementItems = announcements.map(ann => ({
-      id: ann.id,
-      type: 'announcement' as const,
-      author: 'Management',
-      unit: 'Admin',
-      timestamp: new Date(ann.createdAt).toLocaleDateString(),
-      message: `${ann.title}: ${ann.content}`,
-      likes: 0,
-      replies: 0,
-      liked: false,
-      category: ann.category,
-    }))
+  const getUnifiedFeed = () => boardPosts
 
-    const residentItems = boardPosts.map(post => ({
-      ...post,
-      type: 'post' as const,
-      category: undefined,
-    }))
-
-    // Merge and sort by timestamp (newest first)
-    return [...announcementItems, ...residentItems].sort((a, b) => {
-      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    })
+  const handleDeletePost = async (postId: string) => {
+    try {
+      const response = await fetch(`/api/community/posts/${postId}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not delete post')
+      setBoardPosts(boardPosts.filter(post => post.id !== postId))
+      toast.success('Post deleted', { description: 'Your post has been removed from the board.' })
+    } catch (error) {
+      toast.error('Could not delete post', { description: error instanceof Error ? error.message : 'Try again.' })
+    }
   }
 
-  const handleDeletePost = (postId: string) => {
-    setBoardPosts(boardPosts.filter(post => post.id !== postId))
-    toast.success('Post deleted', { description: 'Your post has been removed from the board.' })
-  }
-
-  const handleEditPost = (postId: string, newMessage: string) => {
-    setBoardPosts(boardPosts.map(post =>
-      post.id === postId ? { ...post, message: newMessage } : post
-    ))
-    setEditingPostId(null)
-    toast.success('Post updated', { description: 'Your post has been updated successfully.' })
+  const handleEditPost = async (postId: string, newMessage: string) => {
+    try {
+      const response = await fetch(`/api/community/posts/${postId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: newMessage }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not update post')
+      setBoardPosts(boardPosts.map(post => post.id === postId ? { ...post, message: result.data.message } : post))
+      setEditingPostId(null)
+      setNewPostText('')
+      toast.success('Post updated', { description: 'Your post has been updated successfully.' })
+    } catch (error) {
+      toast.error('Could not update post', { description: error instanceof Error ? error.message : 'Try again.' })
+    }
   }
 
   const getStatusColor = (status: string) => {
@@ -262,30 +271,31 @@ export default function Community() {
     setShowSuccessScreen(true)
   }
 
-  const handlePostMessage = () => {
+  const handlePostMessage = async () => {
     if (newPostText.trim()) {
-      const newPost: BoardPost = {
-        id: Date.now().toString(),
-        author: 'You',
-        unit: '402',
-        timestamp: 'now',
-        message: newPostText,
-        likes: 0,
-        replies: 0,
-        liked: false
+      try {
+        const response = await fetch('/api/community/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: newPostText }) })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not create post')
+        const newPost: BoardPost = { ...result.data, timestamp: 'now', canEdit: true }
+        setBoardPosts([newPost, ...boardPosts])
+        setNewPostText('')
+        setShowNewPost(false)
+      } catch (error) {
+        toast.error('Could not create post', { description: error instanceof Error ? error.message : 'Try again.' })
       }
-      setBoardPosts([newPost, ...boardPosts])
-      setNewPostText('')
-      setShowNewPost(false)
     }
   }
 
-  const toggleLike = (postId: string) => {
-    setBoardPosts(boardPosts.map(post =>
-      post.id === postId
-        ? { ...post, liked: !post.liked, likes: post.liked ? post.likes - 1 : post.likes + 1 }
-        : post
-    ))
+  const toggleLike = async (postId: string) => {
+    try {
+      const response = await fetch(`/api/community/posts/${postId}/like`, { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not update like')
+      setBoardPosts(boardPosts.map(post => post.id === postId ? { ...post, liked: result.data.liked, likes: result.data.likes } : post))
+    } catch (error) {
+      toast.error('Could not update like', { description: error instanceof Error ? error.message : 'Try again.' })
+    }
   }
 
   const handleCancelBooking = (bookingId: string) => {
@@ -320,7 +330,7 @@ export default function Community() {
         </div>
         <div className="bg-orange-50 rounded-lg p-4 border border-orange-200">
           <p className="text-xs font-semibold text-orange-600 uppercase">Community Posts</p>
-          <p className="text-2xl font-bold text-orange-900 mt-2">{boardPosts.length}</p>
+          <p className="text-2xl font-bold text-orange-900 mt-2">{boardPosts.filter(post => post.type === 'post').length}</p>
         </div>
       </div>
 
@@ -443,7 +453,7 @@ export default function Community() {
                   </div>
                   
                   {/* Edit/Delete for own posts */}
-                  {item.type === 'post' && item.unit === currentUserUnit && (
+                  {item.type === 'post' && item.canEdit && (
                     <div className="flex gap-2">
                       <button
                         onClick={() => setEditingPostId(item.id)}

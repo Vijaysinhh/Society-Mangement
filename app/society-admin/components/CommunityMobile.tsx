@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Trash2, Plus, Search, Heart, MessageSquare, Share2, Edit2, FileText, TrendingUp } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -71,8 +71,8 @@ const mockGuidelines: Guideline[] = [
 
 export default function CommunityMobile() {
   const [activeTab, setActiveTab] = useState<'board' | 'guidelines'>('board')
-  const [posts, setPosts] = useState<CommunityPost[]>([...mockAdminAnnouncements, ...mockResidentPosts])
-  const [guidelines, setGuidelines] = useState<Guideline[]>(mockGuidelines)
+  const [posts, setPosts] = useState<CommunityPost[]>([])
+  const [guidelines, setGuidelines] = useState<Guideline[]>([])
   const [searchTerm, setSearchTerm] = useState('')
   const [showPostForm, setShowPostForm] = useState(false)
   const [newAnnouncement, setNewAnnouncement] = useState('')
@@ -81,78 +81,97 @@ export default function CommunityMobile() {
   const [editingGuidelineId, setEditingGuidelineId] = useState<string | null>(null)
   const [newGuidelineTitle, setNewGuidelineTitle] = useState('')
   const [newGuidelineContent, setNewGuidelineContent] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadCommunity() {
+      try {
+        const [postsResponse, guidelinesResponse] = await Promise.all([fetch('/api/community/posts'), fetch('/api/community/guidelines')])
+        const [postsResult, guidelinesResult] = await Promise.all([postsResponse.json(), guidelinesResponse.json()])
+        if (!postsResponse.ok) throw new Error(postsResult.error || 'Could not load community posts')
+        if (!guidelinesResponse.ok) throw new Error(guidelinesResult.error || 'Could not load guidelines')
+        if (!cancelled) {
+          setPosts((postsResult.data || []).map((post: CommunityPost & { timestamp: string }) => ({ ...post, timestamp: new Date(post.timestamp).toLocaleDateString() })))
+          setGuidelines((guidelinesResult.data || []).map((guideline: Guideline) => ({ ...guideline, createdAt: new Date(guideline.createdAt).toLocaleDateString(), updatedAt: new Date(guideline.updatedAt).toLocaleDateString() })))
+        }
+      } catch (error) {
+        if (!cancelled) toast.error('Could not load community', { description: error instanceof Error ? error.message : 'Try again.' })
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void loadCommunity()
+    return () => { cancelled = true }
+  }, [])
 
   const filteredPosts = posts.filter(post =>
     post.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
     post.author.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
-  const handlePostAnnouncement = () => {
+  const handlePostAnnouncement = async () => {
     if (!newAnnouncement.trim()) {
       toast.error('Please enter an announcement')
       return
     }
-    const announcement: CommunityPost = {
-      id: `ann-${Date.now()}`,
-      type: 'announcement',
-      author: 'Management',
-      unit: 'Admin',
-      timestamp: new Date().toLocaleDateString(),
-      message: newAnnouncement,
-      likes: 0,
-      replies: 0,
-      shares: 0,
-      liked: false,
-      category: selectedCategory,
+    try {
+      const response = await fetch('/api/community/posts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: newAnnouncement, category: selectedCategory }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not post announcement')
+      setPosts([{ ...result.data, timestamp: new Date(result.data.timestamp).toLocaleDateString() }, ...posts])
+      setNewAnnouncement('')
+      setShowPostForm(false)
+      toast.success('Announcement posted!')
+    } catch (error) {
+      toast.error('Could not post announcement', { description: error instanceof Error ? error.message : 'Try again.' })
     }
-    setPosts([announcement, ...posts])
-    setNewAnnouncement('')
-    setShowPostForm(false)
-    toast.success('Announcement posted!')
   }
 
-  const handleDeletePost = (postId: string) => {
-    setPosts(posts.filter(p => p.id !== postId))
-    toast.success('Post deleted')
+  const handleDeletePost = async (postId: string) => {
+    try {
+      const response = await fetch(`/api/community/posts/${postId}`, { method: 'DELETE' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not delete post')
+      setPosts(posts.filter(p => p.id !== postId))
+      toast.success('Post deleted')
+    } catch (error) {
+      toast.error('Could not delete post', { description: error instanceof Error ? error.message : 'Try again.' })
+    }
   }
 
-  const handleSaveGuideline = () => {
+  const handleSaveGuideline = async () => {
     if (!newGuidelineTitle.trim() || !newGuidelineContent.trim()) {
       toast.error('Please fill in all fields')
       return
     }
-    if (editingGuidelineId) {
-      setGuidelines(guidelines.map(g =>
-        g.id === editingGuidelineId
-          ? { ...g, title: newGuidelineTitle, content: newGuidelineContent, updatedAt: new Date().toLocaleDateString() }
-          : g
-      ))
-      toast.success('Guideline updated!')
-    } else {
-      const lastVersion = guidelines.length > 0 ? guidelines[0].version : 'v0.0'
-      const [major, minor] = lastVersion.substring(1).split('.').map(Number)
-      const newVersion = `v${major}.${minor + 1}`
-      const newGuideline: Guideline = {
-        id: `guide-${Date.now()}`,
-        version: newVersion,
-        title: newGuidelineTitle,
-        content: newGuidelineContent,
-        createdAt: new Date().toLocaleDateString(),
-        updatedAt: new Date().toLocaleDateString(),
-      }
-      setGuidelines([newGuideline, ...guidelines])
-      toast.success(`Guideline created version ${newVersion}`)
+    try {
+      const response = await fetch(editingGuidelineId ? `/api/community/guidelines/${editingGuidelineId}` : '/api/community/guidelines', { method: editingGuidelineId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newGuidelineTitle, content: newGuidelineContent }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not save guideline')
+      const saved = { ...result.data, createdAt: new Date(result.data.createdAt).toLocaleDateString(), updatedAt: new Date(result.data.updatedAt).toLocaleDateString() }
+      setGuidelines(editingGuidelineId ? guidelines.map(g => g.id === editingGuidelineId ? saved : g) : [saved, ...guidelines])
+      toast.success(editingGuidelineId ? 'Guideline updated!' : `Guideline created version ${saved.version}`)
+      setNewGuidelineTitle('')
+      setNewGuidelineContent('')
+      setShowGuidelineForm(false)
+      setEditingGuidelineId(null)
+    } catch (error) {
+      toast.error('Could not save guideline', { description: error instanceof Error ? error.message : 'Try again.' })
     }
-    setNewGuidelineTitle('')
-    setNewGuidelineContent('')
-    setShowGuidelineForm(false)
-    setEditingGuidelineId(null)
   }
 
-  const handleDeleteGuideline = (guidelineId: string) => {
+  const handleDeleteGuideline = async (guidelineId: string) => {
     if (confirm('Delete this guideline version?')) {
-      setGuidelines(guidelines.filter(g => g.id !== guidelineId))
-      toast.success('Guideline deleted')
+      try {
+        const response = await fetch(`/api/community/guidelines/${guidelineId}`, { method: 'DELETE' })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not delete guideline')
+        setGuidelines(guidelines.filter(g => g.id !== guidelineId))
+        toast.success('Guideline deleted')
+      } catch (error) {
+        toast.error('Could not delete guideline', { description: error instanceof Error ? error.message : 'Try again.' })
+      }
     }
   }
 
@@ -266,6 +285,8 @@ export default function CommunityMobile() {
 
           {/* Feed */}
           <div className="space-y-3">
+            {loading && <p role="status" className="py-6 text-center text-sm text-slate-600">Loading community posts...</p>}
+            {!loading && filteredPosts.length === 0 && <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-600">No community posts yet.</p>}
             {filteredPosts.map(post => (
               <div
                 key={post.id}
@@ -330,6 +351,8 @@ export default function CommunityMobile() {
           )}
 
           <div className="space-y-3">
+            {loading && <p role="status" className="py-6 text-center text-sm text-slate-600">Loading guidelines...</p>}
+            {!loading && guidelines.length === 0 && <p className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-sm text-slate-600">No community guidelines yet.</p>}
             {guidelines.map(guideline => (
               <div key={guideline.id} className="bg-white border border-slate-200 rounded-lg p-4 hover:shadow-md">
                 <div className="flex justify-between items-start mb-3">

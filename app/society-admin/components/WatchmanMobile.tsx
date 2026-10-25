@@ -14,6 +14,9 @@ interface Watchman {
   status: 'active' | 'suspended' | 'deactivated'
   username?: string
   password?: string
+  visitorsLogged?: number
+  isOnDuty?: boolean
+  currentDutyStartedAt?: string | null
 }
 
 interface DutyAssignment {
@@ -161,14 +164,20 @@ export default function WatchmanMobile() {
 
   const handleDeleteWatchman = async (id: string) => {
     if (!window.confirm('Deactivate this watchman account? They will no longer be able to log in.')) return
+    await updateWatchmanStatus(id, 'deactivated')
+  }
+
+  const updateWatchmanStatus = async (id: string, status: Watchman['status']) => {
     setWatchmanError('')
     try {
-      const response = await fetch(`/api/watchmen/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'deactivated' }) })
+      const response = await fetch(`/api/watchmen/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) })
       const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Could not deactivate watchman')
-      setWatchmen((current) => current.map((watchman) => watchman.id === id ? result.data : watchman))
+      if (!response.ok) throw new Error(result.error || 'Could not update watchman status')
+      setWatchmen((current) => current.map((watchman) => watchman.id === id
+        ? { ...watchman, ...result.data, isOnDuty: status === 'active' ? watchman.isOnDuty : false }
+        : watchman))
     } catch (error) {
-      setWatchmanError(error instanceof Error ? error.message : 'Could not deactivate watchman')
+      setWatchmanError(error instanceof Error ? error.message : 'Could not update watchman status')
     }
   }
 
@@ -189,7 +198,9 @@ export default function WatchmanMobile() {
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || 'Could not save watchman')
       if (isEditing) {
-        setWatchmen((current) => current.map((watchman) => watchman.id === selectedWatchman!.id ? result.data : watchman))
+        setWatchmen((current) => current.map((watchman) => watchman.id === selectedWatchman!.id
+          ? { ...watchman, ...result.data, isOnDuty: result.data.status === 'active' ? watchman.isOnDuty : false }
+          : watchman))
       } else {
         setWatchmen((current) => [result.data, ...current])
         setSelectedWatchmanId(result.data.id)
@@ -260,13 +271,17 @@ export default function WatchmanMobile() {
               
               // Calculate performance metrics
               const watchmanLogs = dutyLogs.filter(log => log.watchmanId === watchman.id)
-              const daysWorked = watchmanLogs.filter(l => l.status === 'present').length
-              const daysAbsent = watchmanLogs.filter(l => l.status === 'absent').length
+              const sevenDaysAgo = new Date()
+              sevenDaysAgo.setHours(0, 0, 0, 0)
+              sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6)
+              const recentWorkedDates = new Set(watchmanLogs
+                .filter(log => log.status === 'present' && new Date(`${log.date}T00:00:00`) >= sevenDaysAgo)
+                .map(log => log.date))
+              const daysWorked = recentWorkedDates.size
+              const daysAbsent = Math.max(0, 7 - daysWorked)
               const daysOnLeave = watchmanLogs.filter(l => l.status === 'leave').length
-              const attendanceRate = watchmanLogs.length > 0 
-                ? Math.round((daysWorked / (watchmanLogs.length - daysOnLeave)) * 100) 
-                : 0
-              const visitorsLogged = 0
+              const attendanceRate = Math.round((daysWorked / 7) * 100)
+              const visitorsLogged = watchman.visitorsLogged || 0
 
               return (
                 <div key={watchman.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -278,8 +293,8 @@ export default function WatchmanMobile() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-slate-900 truncate">🔒 {watchman.name}</p>
-                        <span className={`text-xs px-2 py-1 rounded-full flex-shrink-0 ${watchman.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                          {watchman.status === 'active' ? 'Active' : 'Off'}
+                        <span className={`text-xs px-2 py-1 rounded-full flex-shrink-0 ${watchman.isOnDuty ? 'bg-green-100 text-green-700' : watchman.status === 'active' ? 'bg-slate-100 text-slate-700' : 'bg-red-100 text-red-700'}`}>
+                          {watchman.isOnDuty ? 'On Duty' : watchman.status === 'active' ? 'Active' : watchman.status === 'suspended' ? 'Suspended' : 'Off'}
                         </span>
                       </div>
                       <p className="text-xs text-slate-500 mt-1">{watchman.assignedArea}</p>
@@ -296,7 +311,7 @@ export default function WatchmanMobile() {
                           <div className="bg-white border border-blue-200 rounded-lg p-3">
                             <p className="text-xs font-medium text-blue-600">Visitors Logged</p>
                             <p className="text-2xl font-bold text-blue-700 mt-1">{visitorsLogged}</p>
-                            <p className="text-xs text-blue-600 mt-1">Visitor records not connected yet</p>
+                            <p className="text-xs text-blue-600 mt-1">Visitor requests handled</p>
                           </div>
                           <div className="bg-white border border-green-200 rounded-lg p-3">
                             <p className="text-xs font-medium text-green-600">Attendance</p>
@@ -358,11 +373,13 @@ export default function WatchmanMobile() {
                             Edit
                           </button>
                           <button
-                            onClick={() => handleDeleteWatchman(watchman.id)}
+                            onClick={() => watchman.status === 'deactivated'
+                              ? void updateWatchmanStatus(watchman.id, 'active')
+                              : void handleDeleteWatchman(watchman.id)}
                             className="flex-1 bg-red-50 hover:bg-red-100 text-red-600 py-2 rounded-lg font-medium text-sm flex items-center justify-center gap-1 transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
-                            Deactivate
+                            {watchman.status === 'deactivated' ? 'Reactivate' : 'Deactivate'}
                           </button>
                         </div>
                       </div>
@@ -520,11 +537,13 @@ export default function WatchmanMobile() {
                     Edit
                   </button>
                   <button 
-                    onClick={() => handleDeleteWatchman(watchman.id)}
+                    onClick={() => watchman.status === 'deactivated'
+                      ? void updateWatchmanStatus(watchman.id, 'active')
+                      : void handleDeleteWatchman(watchman.id)}
                     className="flex-1 bg-red-100 text-red-700 py-2 rounded-lg font-medium text-sm hover:bg-red-200 flex items-center justify-center gap-2"
                   >
                     <Trash2 className="w-4 h-4" />
-                    Deactivate
+                    {watchman.status === 'deactivated' ? 'Reactivate' : 'Deactivate'}
                   </button>
                 </div>
               </div>
@@ -681,6 +700,20 @@ export default function WatchmanMobile() {
                   placeholder="e.g., Main Gate, Parking"
                 />
               </div>
+              {selectedWatchman && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Account Status</label>
+                  <select
+                    value={formData.status || 'active'}
+                    onChange={e => setFormData({ ...formData, status: e.target.value as Watchman['status'] })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="active">Active</option>
+                    <option value="suspended">Suspended</option>
+                    <option value="deactivated">Deactivated</option>
+                  </select>
+                </div>
+              )}
               {watchmanError && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{watchmanError}</p>}
             </div>
 
