@@ -1,11 +1,12 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus, Trash2, Edit2, Clock, User, Calendar, ChevronRight, AlertCircle } from 'lucide-react'
 import { toast } from 'sonner'
 
 interface DutySchedule {
   id: string
+  watchmanId: string
   watchmanName: string
   watchmanPhone: string
   dayOfWeek: string
@@ -14,41 +15,23 @@ interface DutySchedule {
   createdAt: string
 }
 
-const mockSchedules: DutySchedule[] = [
-  {
-    id: '1',
-    watchmanName: 'Ramesh Kumar',
-    watchmanPhone: '98765 43210',
-    dayOfWeek: 'Monday',
-    startTime: '06:00 AM',
-    endTime: '02:00 PM',
-    createdAt: '2026-03-01',
-  },
-  {
-    id: '2',
-    watchmanName: 'Ramesh Kumar',
-    watchmanPhone: '98765 43210',
-    dayOfWeek: 'Monday',
-    startTime: '02:00 PM',
-    endTime: '10:00 PM',
-    createdAt: '2026-03-01',
-  },
-  {
-    id: '3',
-    watchmanName: 'Priya Singh',
-    watchmanPhone: '87654 32109',
-    dayOfWeek: 'Tuesday',
-    startTime: '06:00 AM',
-    endTime: '02:00 PM',
-    createdAt: '2026-03-02',
-  },
-]
+interface WatchmanOption { id: string; name: string; phone: string; status: string }
+
+const to24Hour = (value: string) => {
+  const match = value.match(/^(\d{1,2}):(\d{2}) (AM|PM)$/)
+  if (!match) return value
+  let hour = Number(match[1]); if (match[3] === 'AM' && hour === 12) hour = 0; if (match[3] === 'PM' && hour !== 12) hour += 12
+  return `${String(hour).padStart(2, '0')}:${match[2]}`
+}
 
 export default function ScheduleMobile() {
-  const [schedules, setSchedules] = useState<DutySchedule[]>(mockSchedules)
+  const [schedules, setSchedules] = useState<DutySchedule[]>([])
+  const [watchmen, setWatchmen] = useState<WatchmanOption[]>([])
+  const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [formData, setFormData] = useState({
+    watchmanId: '',
     watchmanName: '',
     watchmanPhone: '',
     dayOfWeek: 'Monday',
@@ -63,39 +46,46 @@ export default function ScheduleMobile() {
     '08:00 PM', '09:00 PM', '10:00 PM', '11:00 PM', '12:00 AM', '01:00 AM', '02:00 AM'
   ]
 
-  const handleAddSchedule = () => {
-    if (!formData.watchmanName.trim() || !formData.watchmanPhone.trim()) {
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(['/api/watchman-schedules', '/api/watchmen'].map(async url => {
+      const response = await fetch(url); const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not load duty schedule')
+      return result.data || []
+    })).then(([scheduleData, watchmanData]) => {
+      if (!cancelled) { setSchedules(scheduleData); setWatchmen(watchmanData.filter((watchman: WatchmanOption) => watchman.status === 'active')) }
+    }).catch(error => { if (!cancelled) toast.error('Could not load duty schedule', { description: error instanceof Error ? error.message : 'Try again.' }) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const handleAddSchedule = async () => {
+    if (!formData.watchmanId) {
       toast.error('Missing Information', {
-        description: 'Please fill in watchman name and phone number',
+        description: 'Please select a watchman',
       })
       return
     }
 
-    if (editingId) {
-      // Update existing schedule
-      setSchedules(schedules.map(s =>
-        s.id === editingId
-          ? { ...s, ...formData, createdAt: s.createdAt }
-          : s
-      ))
+    try {
+      const response = await fetch(editingId ? `/api/watchman-schedules/${editingId}` : '/api/watchman-schedules', { method: editingId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ watchmanId: formData.watchmanId, dayOfWeek: formData.dayOfWeek, startTime: to24Hour(formData.startTime), endTime: to24Hour(formData.endTime) }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not save duty schedule')
+      if (editingId) {
+        setSchedules(schedules.map(s => s.id === editingId ? result.data : s))
       toast.success('Schedule Updated', {
         description: `${formData.watchmanName}'s duty updated for ${formData.dayOfWeek}`,
       })
       setEditingId(null)
-    } else {
-      // Add new schedule
-      const newSchedule: DutySchedule = {
-        id: String(Date.now()),
-        ...formData,
-        createdAt: new Date().toISOString().split('T')[0],
-      }
-      setSchedules([...schedules, newSchedule])
+      } else {
+      setSchedules([...schedules, result.data])
       toast.success('Schedule Created', {
         description: `Duty assigned to ${formData.watchmanName} on ${formData.dayOfWeek}`,
       })
-    }
+      }
 
     setFormData({
+      watchmanId: '',
       watchmanName: '',
       watchmanPhone: '',
       dayOfWeek: 'Monday',
@@ -103,10 +93,12 @@ export default function ScheduleMobile() {
       endTime: '02:00 PM',
     })
     setShowForm(false)
+    } catch (error) { toast.error('Could not save schedule', { description: error instanceof Error ? error.message : 'Try again.' }) }
   }
 
   const handleEditSchedule = (schedule: DutySchedule) => {
     setFormData({
+      watchmanId: schedule.watchmanId,
       watchmanName: schedule.watchmanName,
       watchmanPhone: schedule.watchmanPhone,
       dayOfWeek: schedule.dayOfWeek,
@@ -117,12 +109,16 @@ export default function ScheduleMobile() {
     setShowForm(true)
   }
 
-  const handleDeleteSchedule = (id: string, watchmanName: string) => {
+  const handleDeleteSchedule = async (id: string, watchmanName: string) => {
     if (confirm(`Remove ${watchmanName}'s shift?`)) {
-      setSchedules(schedules.filter(s => s.id !== id))
+      try {
+        const response = await fetch(`/api/watchman-schedules/${id}`, { method: 'DELETE' }); const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not delete duty schedule')
+        setSchedules(schedules.filter(s => s.id !== id))
       toast.success('Schedule Deleted', {
         description: `${watchmanName}'s duty has been removed`,
       })
+      } catch (error) { toast.error('Could not delete schedule', { description: error instanceof Error ? error.message : 'Try again.' }) }
     }
   }
 
@@ -130,6 +126,7 @@ export default function ScheduleMobile() {
     setShowForm(false)
     setEditingId(null)
     setFormData({
+      watchmanId: '',
       watchmanName: '',
       watchmanPhone: '',
       dayOfWeek: 'Monday',
@@ -175,13 +172,14 @@ export default function ScheduleMobile() {
             {/* Watchman Name */}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">Watchman Name</label>
-              <input
-                type="text"
-                placeholder="Enter watchman name"
-                value={formData.watchmanName}
-                onChange={(e) => setFormData({ ...formData, watchmanName: e.target.value })}
+              <select
+                value={formData.watchmanId}
+                onChange={(e) => { const watchman = watchmen.find(item => item.id === e.target.value); setFormData({ ...formData, watchmanId: e.target.value, watchmanName: watchman?.name || '', watchmanPhone: watchman?.phone || '' }) }}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-              />
+              >
+                <option value="">Select watchman</option>
+                {watchmen.map(watchman => <option key={watchman.id} value={watchman.id}>{watchman.name}</option>)}
+              </select>
             </div>
 
             {/* Watchman Phone */}
@@ -191,7 +189,7 @@ export default function ScheduleMobile() {
                 type="text"
                 placeholder="Enter phone number"
                 value={formData.watchmanPhone}
-                onChange={(e) => setFormData({ ...formData, watchmanPhone: e.target.value })}
+                readOnly
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
               />
             </div>
@@ -259,6 +257,7 @@ export default function ScheduleMobile() {
 
       {/* Schedules by Day */}
       <div className="space-y-4">
+        {loading && <p role="status" className="py-6 text-center text-sm text-slate-600">Loading duty schedule...</p>}
         {days.map(day => (
           <div key={day}>
             <h3 className="font-semibold text-slate-900 mb-3 flex items-center gap-2">
