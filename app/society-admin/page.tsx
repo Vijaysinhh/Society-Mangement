@@ -15,6 +15,7 @@ import ProfileMobile from './components/ProfileMobile'
 import NotificationPanel from '@/components/NotificationPanel'
 
 type ViewType = 'dashboard' | 'properties' | 'finances' | 'issues' | 'watchman' | 'visitors' | 'schedule' | 'community' | 'profile'
+type AdminAlert = { id: string; type: 'action-needed' | 'upcoming' | 'milestone' | 'success' | 'overdue'; severity: 'critical' | 'high' | 'medium' | 'low'; unit: string; owner: string; amount?: number; daysOverdue?: number; message: string; date: string; read?: boolean }
 
 export default function SocietyAdminPage() {
   const router = useRouter()
@@ -23,18 +24,8 @@ export default function SocietyAdminPage() {
   const [societyName, setSocietyName] = useState('Loading society...')
   const [contextError, setContextError] = useState('')
   const [showNotificationPanel, setShowNotificationPanel] = useState(false)
-  const [notificationCount, setNotificationCount] = useState(3)
-  const [unreadAlerts, setUnreadAlerts] = useState<Set<string>>(new Set(['1', '2', '3']))
-
-  const [alerts, setAlerts] = useState([
-    { id: '1', type: 'action-needed' as const, severity: 'high' as const, unit: '104', owner: 'Sarah Williams', amount: 35000, daysOverdue: 45, message: 'Unit 104 - Payment Due: ₹35,000 (45 days past due) - Reach out to Sarah', date: '2026-02-27', read: false },
-    { id: '2', type: 'action-needed' as const, severity: 'high' as const, unit: '102', owner: 'Priya Singh', amount: 22000, daysOverdue: 28, message: 'Unit 102 - Payment Due: ₹22,000 (28 days past due) - Send friendly reminder to Priya', date: '2026-02-14', read: false },
-    { id: '3', type: 'action-needed' as const, severity: 'high' as const, unit: '201', owner: 'Michael Chen', amount: 20000, daysOverdue: 52, message: 'Unit 201 - Payment Due: ₹20,000 (52 days past due) - Follow up with Michael', date: '2026-01-20', read: false },
-    { id: '4', type: 'upcoming' as const, severity: 'medium' as const, unit: '105', owner: 'David Brown', amount: 6000, message: 'Unit 105 - Payment Due in 3 Days: ₹6,000 - Courtesy notice for David', date: '2026-03-16', read: true },
-    { id: '5', type: 'success' as const, severity: 'low' as const, unit: '101', owner: 'Rajesh Kumar', amount: 5000, message: 'Unit 101 - Payment Received: ₹5,000 confirmed. Thank you Rajesh!', date: '2026-03-13', read: true },
-    { id: '6', type: 'milestone' as const, severity: 'low' as const, unit: '103', owner: 'Amit Patel', message: 'Unit 103 - Q1 2026 maintenance fees fully paid', date: '2026-03-12', read: true },
-    { id: '7', type: 'upcoming' as const, severity: 'medium' as const, unit: '202', owner: 'Jennifer Lee', amount: 6000, message: 'Unit 202 - Payment Due in 5 Days: ₹6,000 - Gentle reminder for Jennifer', date: '2026-03-18', read: true },
-  ])
+  const [notificationCount, setNotificationCount] = useState(0)
+  const [alerts, setAlerts] = useState<AdminAlert[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -53,6 +44,20 @@ export default function SocietyAdminPage() {
         if (!cancelled) setContextError(error instanceof Error ? error.message : 'Could not load society')
       })
 
+    fetch('/api/society-admin/notifications', { cache: 'no-store' })
+      .then(async (response) => {
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not load notifications')
+        return result.data
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setAlerts(data.alerts || [])
+          setNotificationCount(data.unreadCount || 0)
+        }
+      })
+      .catch((error) => { if (!cancelled) console.error('[Notifications] Load failed:', error) })
+
     const handleMaintenanceSync = () => setView((current) => current)
     window.addEventListener('maintenanceFeeSync', handleMaintenanceSync)
     return () => {
@@ -61,18 +66,18 @@ export default function SocietyAdminPage() {
     }
   }, [])
 
-  const handleMarkAlertAsRead = (alertId: string) => {
-    setUnreadAlerts((current) => {
-      const next = new Set(current)
-      next.delete(alertId)
-      return next
-    })
+  const handleMarkAlertAsRead = async (alertId: string) => {
+    const target = alerts.find((alert) => alert.id === alertId)
+    if (!target || target.read) return
+    const response = await fetch('/api/society-admin/notifications', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: alertId }) })
+    if (!response.ok) return
     setAlerts((current) => current.map((alert) => alert.id === alertId ? { ...alert, read: true } : alert))
     setNotificationCount((current) => Math.max(0, current - 1))
   }
 
-  const handleMarkAllAlertsAsRead = () => {
-    setUnreadAlerts(new Set())
+  const handleMarkAllAlertsAsRead = async () => {
+    const response = await fetch('/api/society-admin/notifications', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ all: true }) })
+    if (!response.ok) return
     setAlerts((current) => current.map((alert) => ({ ...alert, read: true })))
     setNotificationCount(0)
   }
