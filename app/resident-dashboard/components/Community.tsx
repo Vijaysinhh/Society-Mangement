@@ -15,6 +15,7 @@ interface Amenity {
   capacity: number
   availability: string[]
   createdDate: string
+  timing?: string
 }
 
 interface BookingRequest {
@@ -156,13 +157,48 @@ const mockAnnouncements = [
   },
 ]
 
+function AmenityBookingModal({ amenity, onClose, onSuccess }: {
+  amenity: Amenity
+  onClose: () => void
+  onSuccess: (booking: { amenityId: string; amenityName: string; date: Date; time: string; cost: number }) => void | Promise<void>
+}) {
+  const [date, setDate] = useState('')
+  const [time, setTime] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const minimumDate = new Date().toISOString().split('T')[0]
+  const submit = async () => {
+    if (!date || !time) return toast.error('Please select a date and time slot')
+    setSubmitting(true)
+    try { await onSuccess({ amenityId: amenity.id, amenityName: amenity.name, date: new Date(`${date}T12:00:00`), time, cost: amenity.cost }) }
+    finally { setSubmitting(false) }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4">
+      <div className="w-full max-w-lg rounded-t-2xl sm:rounded-2xl bg-white p-6 shadow-xl">
+        <div className="flex items-start justify-between mb-5">
+          <div><h3 className="text-lg font-semibold text-slate-900">Book {amenity.name}</h3><p className="text-sm text-slate-600 mt-1">Select your preferred date and time</p></div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-slate-100" aria-label="Close booking"><X className="w-5 h-5 text-slate-500" /></button>
+        </div>
+        <div className="space-y-4">
+          <div><label className="block text-sm font-medium text-slate-700 mb-1">Booking date</label><input type="date" min={minimumDate} value={date} onChange={event => setDate(event.target.value)} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" /></div>
+          <div><label className="block text-sm font-medium text-slate-700 mb-1">Time slot</label><input type="text" value={time} onChange={event => setTime(event.target.value)} placeholder={amenity.timing || 'e.g., 6 PM - 8 PM'} className="w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" /></div>
+          <div className="flex items-center justify-between rounded-lg bg-slate-50 px-4 py-3"><span className="text-sm text-slate-600">Booking charge</span><span className="font-bold text-slate-900">₹{amenity.cost}</span></div>
+          <div className="flex gap-3"><button onClick={onClose} className="flex-1 px-4 py-2.5 border border-slate-300 rounded-lg font-semibold text-slate-700 hover:bg-slate-50">Cancel</button><button onClick={submit} disabled={submitting} className="flex-1 px-4 py-2.5 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 disabled:opacity-60">{submitting ? 'Sending...' : 'Request Booking'}</button></div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Community() {
   const [activeTab, setActiveTab] = useState<'board' | 'amenities' | 'mybookings'>('board')
   const [announcements, setAnnouncements] = useState<typeof mockAnnouncements>([])
   const [showBookingModal, setShowBookingModal] = useState(false)
   const [selectedAmenity, setSelectedAmenity] = useState<Amenity | null>(null)
   const [boardPosts, setBoardPosts] = useState<BoardPost[]>([])
-  const [myBookings, setMyBookings] = useState(mockMyBookings)
+  const [amenities, setAmenities] = useState<Amenity[]>([])
+  const [myBookings, setMyBookings] = useState<BookingRequest[]>([])
+  const [currentUnitId, setCurrentUnitId] = useState('')
   const [showNewPost, setShowNewPost] = useState(false)
   const [newPostText, setNewPostText] = useState('')
   const [bookingDate, setBookingDate] = useState('')
@@ -186,6 +222,25 @@ export default function Community() {
       .catch((error) => {
         if (!cancelled) toast.error('Could not load community posts', { description: error instanceof Error ? error.message : 'Try again.' })
       })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(['/api/amenities', '/api/amenity-bookings', '/api/resident/context'].map(async (url) => {
+      const response = await fetch(url); const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not load amenity information')
+      return result.data
+    })).then(([amenityData, bookingData, context]) => {
+      if (cancelled) return
+      setAmenities(amenityData || [])
+      setMyBookings(bookingData || [])
+      const unit = context?.assignments?.[0]?.unit
+      setCurrentUnitId(unit?.id || '')
+      setCurrentUserUnit(unit?.unit_number || '')
+    }).catch((error) => {
+      if (!cancelled) toast.error('Could not load amenities', { description: error instanceof Error ? error.message : 'Try again.' })
+    })
     return () => { cancelled = true }
   }, [])
 
@@ -298,11 +353,14 @@ export default function Community() {
     }
   }
 
-  const handleCancelBooking = (bookingId: string) => {
+  const handleCancelBooking = async (bookingId: string) => {
     if (confirm('Are you sure you want to cancel this booking?')) {
-      setMyBookings(myBookings.map(b =>
-        b.id === bookingId ? { ...b, status: 'cancelled' as const } : b
-      ))
+      try {
+        const response = await fetch(`/api/amenity-bookings/${bookingId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'cancel' }) })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || 'Could not cancel booking')
+        setMyBookings(myBookings.map(b => b.id === bookingId ? { ...b, status: 'cancelled' } : b))
+      } catch (error) { toast.error('Could not cancel booking', { description: error instanceof Error ? error.message : 'Try again.' }) }
     }
   }
 
@@ -326,7 +384,7 @@ export default function Community() {
         </div>
         <div className="bg-purple-50 rounded-lg p-4 border border-purple-200">
           <p className="text-xs font-semibold text-purple-600 uppercase">Available Amenities</p>
-          <p className="text-2xl font-bold text-purple-900 mt-2">{mockAmenities.length}</p>
+          <p className="text-2xl font-bold text-purple-900 mt-2">{amenities.length}</p>
         </div>
         <div className="bg-orange-50 rounded-lg p-4 border border-orange-200">
           <p className="text-xs font-semibold text-orange-600 uppercase">Community Posts</p>
@@ -351,7 +409,7 @@ export default function Community() {
       {activeTab === 'amenities' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {mockAmenities.map(amenity => (
+            {amenities.map(amenity => (
               <div key={amenity.id} className="bg-white border border-slate-200 rounded-lg p-5 hover:shadow-md transition-shadow">
                 <h3 className="font-semibold text-slate-900 mb-2 text-lg">{amenity.name}</h3>
                 <p className="text-sm text-slate-600 mb-4">{amenity.description}</p>
@@ -588,22 +646,18 @@ export default function Community() {
             setBookingDate('')
             setBookingTime('')
           }}
-          onSuccess={(booking) => {
-            // Add booking to myBookings
-            const newBooking: BookingRequest = {
-              id: `booking-${Date.now()}`,
-              amenityId: booking.amenityId,
-              amenityName: booking.amenityName,
-              bookingDate: booking.date?.toISOString().split('T')[0] || '',
-              timeSlot: booking.time,
-              status: 'paid',
-              cost: booking.cost,
-              requestDate: new Date().toISOString().split('T')[0]
-            }
-            setMyBookings([newBooking, ...myBookings])
-            setShowBookingModal(false)
-            setSelectedAmenity(null)
-            setActiveTab('mybookings')
+          onSuccess={async (booking) => {
+            try {
+              if (!currentUnitId) throw new Error('No active property is assigned to your account')
+              const response = await fetch('/api/amenity-bookings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amenityId: booking.amenityId, unitId: currentUnitId, bookingDate: booking.date?.toISOString().split('T')[0], timeSlot: booking.time }) })
+              const result = await response.json()
+              if (!response.ok) throw new Error(result.error || 'Could not create booking')
+              setMyBookings([result.data, ...myBookings])
+              setShowBookingModal(false)
+              setSelectedAmenity(null)
+              setActiveTab('mybookings')
+              toast.success('Booking request sent', { description: 'Management will review your request.' })
+            } catch (error) { toast.error('Could not book amenity', { description: error instanceof Error ? error.message : 'Try again.' }) }
           }}
         />
       )}

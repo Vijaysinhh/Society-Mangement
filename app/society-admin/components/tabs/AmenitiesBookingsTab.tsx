@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Plus, Edit2, Trash2, Clock, IndianRupee, CheckCircle, XCircle, Calendar, ChevronLeft, ChevronRight, X, ToggleLeft, ToggleRight } from 'lucide-react'
 
 interface AmenitiesBookingsTabProps {
@@ -12,30 +12,29 @@ interface AmenitiesBookingsTabProps {
   }
 }
 
-// Mock amenities
-const initialAmenities = [
-  { id: '1', name: 'Community Hall', timing: '8 AM - 10 PM', price: 2000, status: 'active' as const },
-  { id: '2', name: 'Swimming Pool', timing: '6 AM - 8 PM', price: 500, status: 'active' as const },
-  { id: '3', name: 'Gym', timing: '5 AM - 10 PM', price: 300, status: 'active' as const },
-  { id: '4', name: 'Tennis Court', timing: '6 AM - 9 PM', price: 400, status: 'inactive' as const },
-]
-
-// Mock bookings
-const initialBookings = [
-  { id: '1', amenityId: '1', amenityName: 'Community Hall', property: 'A-101', owner: 'Mr. Sharma', date: '2026-06-01', timeSlot: '2 PM - 6 PM', amount: 2000, status: 'pending' as const, paymentStatus: 'unpaid' as const },
-  { id: '2', amenityId: '2', amenityName: 'Swimming Pool', property: 'B-201', owner: 'Mr. Kumar', date: '2026-05-30', timeSlot: '7 AM - 8 AM', amount: 500, status: 'approved' as const, paymentStatus: 'paid' as const },
-  { id: '3', amenityId: '1', amenityName: 'Community Hall', property: 'C-301', owner: 'Mr. Reddy', date: '2026-06-05', timeSlot: '10 AM - 2 PM', amount: 2000, status: 'pending' as const, paymentStatus: 'unpaid' as const },
-  { id: '4', amenityId: '3', amenityName: 'Gym', property: 'A-102', owner: 'Mrs. Patel', date: '2026-05-29', timeSlot: '6 AM - 7 AM', amount: 300, status: 'approved' as const, paymentStatus: 'unpaid' as const },
-]
+interface Amenity { id: string; name: string; timing: string; price: number; status: 'active' | 'inactive' }
+interface Booking { id: string; amenityId: string; amenityName: string; property: string; owner: string; date: string; timeSlot: string; amount: number; status: 'pending' | 'approved' | 'rejected' | 'cancelled'; paymentStatus: 'unpaid' | 'paid' }
 
 export default function AmenitiesBookingsTab({ searchTerm, filters }: AmenitiesBookingsTabProps) {
   const [activeSubTab, setActiveSubTab] = useState<'manage' | 'bookings'>('manage')
-  const [amenities, setAmenities] = useState(initialAmenities)
-  const [bookings, setBookings] = useState(initialBookings)
+  const [amenities, setAmenities] = useState<Amenity[]>([])
+  const [bookings, setBookings] = useState<Booking[]>([])
   const [showAmenityModal, setShowAmenityModal] = useState(false)
-  const [editingAmenity, setEditingAmenity] = useState<typeof initialAmenities[0] | null>(null)
+  const [editingAmenity, setEditingAmenity] = useState<Amenity | null>(null)
   const [amenityForm, setAmenityForm] = useState({ name: '', timing: '', price: '' })
-  const [currentMonth, setCurrentMonth] = useState(new Date(2026, 4, 1)) // May 2026
+  const [currentMonth, setCurrentMonth] = useState(new Date())
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(['/api/amenities', '/api/amenity-bookings'].map(async (url) => {
+      const result = await fetch(url).then(res => res.json().then(body => ({ ok: res.ok, body })))
+      if (!result.ok) throw new Error(result.body.error || 'Could not load amenities')
+      return result.body.data || []
+    })).then(([amenityData, bookingData]) => {
+      if (!cancelled) { setAmenities(amenityData); setBookings(bookingData.map((booking: any) => ({ ...booking, status: booking.bookingStatus || booking.status }))) }
+    }).catch((error) => { if (!cancelled) alert(error instanceof Error ? error.message : 'Could not load amenities') })
+    return () => { cancelled = true }
+  }, [])
 
   // Filter amenities by search
   const filteredAmenities = amenities.filter(a =>
@@ -72,61 +71,48 @@ export default function AmenitiesBookingsTab({ searchTerm, filters }: AmenitiesB
     setShowAmenityModal(true)
   }
 
-  const handleEditAmenity = (amenity: typeof initialAmenities[0]) => {
+  const handleEditAmenity = (amenity: Amenity) => {
     setEditingAmenity(amenity)
     setAmenityForm({ name: amenity.name, timing: amenity.timing, price: amenity.price.toString() })
     setShowAmenityModal(true)
   }
 
-  const handleSaveAmenity = () => {
-    if (editingAmenity) {
-      setAmenities(amenities.map(a => 
-        a.id === editingAmenity.id 
-          ? { ...a, name: amenityForm.name, timing: amenityForm.timing, price: parseInt(amenityForm.price) }
-          : a
-      ))
-    } else {
-      const newAmenity = {
-        id: Date.now().toString(),
-        name: amenityForm.name,
-        timing: amenityForm.timing,
-        price: parseInt(amenityForm.price),
-        status: 'active' as const
-      }
-      setAmenities([...amenities, newAmenity])
-    }
-    setShowAmenityModal(false)
+  const handleSaveAmenity = async () => {
+    try {
+      const response = await fetch(editingAmenity ? `/api/amenities/${editingAmenity.id}` : '/api/amenities', { method: editingAmenity ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...amenityForm, price: Number(amenityForm.price) }) })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Could not save amenity')
+      setAmenities(editingAmenity ? amenities.map(a => a.id === editingAmenity.id ? result.data : a) : [...amenities, result.data])
+      setShowAmenityModal(false)
+    } catch (error) { alert(error instanceof Error ? error.message : 'Could not save amenity') }
   }
 
-  const handleDeleteAmenity = (id: string) => {
+  const handleDeleteAmenity = async (id: string) => {
     if (confirm('Are you sure you want to delete this amenity?')) {
+      const response = await fetch(`/api/amenities/${id}`, { method: 'DELETE' }); const result = await response.json()
+      if (!response.ok) return alert(result.error || 'Could not delete amenity')
       setAmenities(amenities.filter(a => a.id !== id))
     }
   }
 
-  const handleToggleStatus = (id: string) => {
-    setAmenities(amenities.map(a => 
-      a.id === id 
-        ? { ...a, status: a.status === 'active' ? 'inactive' as const : 'active' as const }
-        : a
-    ))
+  const handleToggleStatus = async (id: string) => {
+    const amenity = amenities.find(a => a.id === id); if (!amenity) return
+    const response = await fetch(`/api/amenities/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: amenity.status === 'active' ? 'inactive' : 'active' }) }); const result = await response.json()
+    if (!response.ok) return alert(result.error || 'Could not update amenity')
+    setAmenities(amenities.map(a => a.id === id ? result.data : a))
   }
 
-  const handleApproveBooking = (id: string) => {
-    setBookings(bookings.map(b => 
-      b.id === id ? { ...b, status: 'approved' as const } : b
-    ))
+  const updateBooking = async (id: string, body: object) => {
+    const response = await fetch(`/api/amenity-bookings/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const result = await response.json()
+    if (!response.ok) return alert(result.error || 'Could not update booking')
+    setBookings(bookings.map(b => b.id === id ? { ...b, status: result.data.bookingStatus, paymentStatus: result.data.paymentStatus } : b))
   }
 
-  const handleRejectBooking = (id: string) => {
-    setBookings(bookings.filter(b => b.id !== id))
-  }
+  const handleApproveBooking = (id: string) => updateBooking(id, { status: 'approved' })
 
-  const handleMarkPaid = (id: string) => {
-    setBookings(bookings.map(b => 
-      b.id === id ? { ...b, paymentStatus: 'paid' as const } : b
-    ))
-  }
+  const handleRejectBooking = (id: string) => updateBooking(id, { status: 'rejected' })
+
+  const handleMarkPaid = (id: string) => updateBooking(id, { paymentStatus: 'paid' })
 
   return (
     <div className="px-4 py-6 space-y-6">
